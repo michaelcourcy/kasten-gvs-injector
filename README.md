@@ -10,7 +10,7 @@ When K10 Generic Storage Backup is enabled on a workload, K10 needs a sidecar co
 
 1. **Annotation** — `k10.kasten.io/forcegenericbackup: "true"` tells K10 to use the generic backup path for this workload.
 2. **Kopia helper volumes** — three `emptyDir` volumes (`kopia-cache-volume`, `kopia-log-volume`, `kopia-repo-volume`) that the sidecar uses at runtime.
-3. **`kanister-sidecar` container** — runs `bash -c 'tail -f /dev/null'` and mounts every PVC-backed volume at `/{volume-name}{original-mount-path}` so Kopia can reach the application data. The image version is read automatically from the K10 `k10-config` ConfigMap (`KanisterToolsImage` key).
+3. **`kanister-sidecar` container** — runs `bash -c 'tail -f /dev/null'` and mounts every PVC-backed volume at `/{volume-name}{original-mount-path}` so Kopia can reach the application data. The image is read from the `KanisterToolsImage` key of the `k10-config` ConfigMap in the K10 namespace, keeping the sidecar version in sync with the installed K10 release. Set `KANISTER_SIDECAR_IMAGE` to override (e.g. to point at a private registry mirror).
 
 Uninject reverses all three changes, including the kopia volumes (fixing a known bug in the original `k10tools` where those volumes were left behind).
 
@@ -46,7 +46,7 @@ All injection parameters are controlled via environment variables. None are requ
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `K10_NAMESPACE` | `kasten-io` | Namespace where K10 is deployed |
-| `KANISTER_SIDECAR_IMAGE` | *(from K10 ConfigMap)* | Full image reference for the sidecar. Override to pull from a private registry |
+| `KANISTER_SIDECAR_IMAGE` | *(read from `k10-config` ConfigMap, key `KanisterToolsImage`)* | Full image reference for the sidecar. Override to pull from a private registry |
 | `KANISTER_IMAGE_PULL_POLICY` | `IfNotPresent` | `imagePullPolicy` for the sidecar |
 | `KANISTER_IMAGE_PULL_SECRETS` | *(none)* | Comma-separated list of `imagePullSecret` names to add to the pod spec |
 | `KANISTER_SECURITY_CONTEXT` | `{}` | JSON `securityContext` object for the sidecar container |
@@ -214,7 +214,7 @@ The script is safe to run multiple times. Inject skips workloads that already ha
 
 | Behaviour | `k10tools` | This script |
 |-----------|-----------|-------------|
-| Sidecar image | Auto-detected, not overridable | Auto-detected, overridable via `KANISTER_SIDECAR_IMAGE` |
+| Sidecar image | Read from `k10-config` ConfigMap, not overridable | Read from `k10-config` ConfigMap, overridable via `KANISTER_SIDECAR_IMAGE` |
 | Private registry support | Not supported | `KANISTER_SIDECAR_IMAGE` + `KANISTER_IMAGE_PULL_SECRETS` |
 | Security context | Always empty | Configurable via `KANISTER_SECURITY_CONTEXT` |
 | Resource requests/limits | Never set | Configurable via `KANISTER_RESOURCES` |
