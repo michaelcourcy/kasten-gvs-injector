@@ -114,21 +114,36 @@ KANISTER_IMAGE_PULL_SECRETS="internal-registry-secret,global-pull-secret" \
 
 ### Pod Security Admission — running as non-root
 
-Namespaces with `restricted` or `baseline` Pod Security Standards may reject containers that run as root. Add a `securityContext` that satisfies the policy:
+Namespaces with `restricted` or `baseline` Pod Security Standards may reject containers that run as root. Add a `securityContext` that satisfies the policy.
 
-```bash
-KANISTER_SECURITY_CONTEXT='{"runAsNonRoot":true,"runAsUser":1000,"runAsGroup":1000,"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}' \
-./k10genericbackup.sh inject deployment my-app-deployment -n my-app
-```
-
-For a namespace that enforces `seccompProfile`:
+> **Important — required Linux capabilities:** Kopia needs `CHOWN`, `DAC_OVERRIDE`, and `FOWNER` to manage file ownership and permissions on backup data. Always drop `ALL` first, then add back only these three. Do not drop them or the backup will fail.
 
 ```bash
 KANISTER_SECURITY_CONTEXT='{
   "runAsNonRoot": true,
   "runAsUser": 1000,
+  "runAsGroup": 1000,
   "allowPrivilegeEscalation": false,
-  "capabilities": {"drop": ["ALL"]},
+  "capabilities": {
+    "drop": ["ALL"],
+    "add":  ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+  }
+}' \
+./k10genericbackup.sh inject deployment my-app-deployment -n my-app
+```
+
+For a namespace that also enforces `seccompProfile`:
+
+```bash
+KANISTER_SECURITY_CONTEXT='{
+  "runAsNonRoot": true,
+  "runAsUser": 1000,
+  "runAsGroup": 1000,
+  "allowPrivilegeEscalation": false,
+  "capabilities": {
+    "drop": ["ALL"],
+    "add":  ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+  },
   "seccompProfile": {"type": "RuntimeDefault"}
 }' \
 ./k10genericbackup.sh inject deployment my-app-deployment -n my-app
@@ -194,7 +209,10 @@ KANISTER_SECURITY_CONTEXT='{
   "runAsNonRoot": true,
   "runAsUser": 65534,
   "allowPrivilegeEscalation": false,
-  "capabilities": {"drop": ["ALL"]},
+  "capabilities": {
+    "drop": ["ALL"],
+    "add":  ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+  },
   "seccompProfile": {"type": "RuntimeDefault"}
 }' \
 KANISTER_RESOURCES='{"requests":{"cpu":"50m","memory":"64Mi"},"limits":{"cpu":"200m","memory":"128Mi"}}' \
@@ -222,3 +240,93 @@ The script is safe to run multiple times. Inject skips workloads that already ha
 | Kopia cache size | Fixed at 3000Mi | Configurable via `KOPIA_CACHE_SIZE` |
 | Uninject cleans kopia volumes | No (bug) | Yes |
 | Idempotency | Inject fails if already injected | Skips gracefully |
+
+
+
+cat<<EOF | kubectl create -f -
+# create the namespace basic-app
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: basic-app
+spec: {}
+--- 
+# Create a pvc in the namespace basic-app whit the name basic-app-pvc and storage class azuredisk-legacy 
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: basic-app-pvc
+  namespace: basic-app
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: $SIZE
+  storageClassName: $STORAGE_CLASS
+---
+# Create a deployment in the namespace basic-app with the name basic-app-deployment using this pvc and writing every 10 seconds the date in the file /data/date.txt
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+     network-controls/date: "2026-02-04"
+  labels:
+     pci-dss-firewall-audit: pci-dss-2023q1
+  name: basic-app-deployment
+  namespace: basic-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: basic-app
+  template:
+    metadata:
+      labels:
+        app: basic-app
+        pci-dss-firewall-audit: pci-dss-2023q1
+    spec:
+      imagePullSecrets:
+        - name: k10-ecr #nexus-registry-secret
+      securityContext:
+        fsGroup: 1301
+        runAsGroup: 1301
+        runAsUser: 1301
+        supplementalGroups: [1301]
+        seccompProfile: 
+          type: RuntimeDefault
+      containers:
+      - name: basic-app
+        securityContext:
+           readOnlyRootFilesystem: true
+           allowPrivilegeEscalation: false
+           runAsGroup: 1301
+           runAsUser: 1301
+           seccompProfile: 
+             type: RuntimeDefault
+           capabilities: 
+             drop: 
+               - ALL
+        image: $IMAGE
+        command: ["/bin/sh", "-c", "while true; do date >> /data/date.txt; sleep 10; done"]
+        volumeMounts:
+        - name: basic-app-volume
+          mountPath: /data
+      volumes:
+      - name: basic-app-volume
+        persistentVolumeClaim:
+          claimName: basic-app-pvc
+EOF
+
+KANISTER_SIDECAR_IMAGE="<nexus resgistry kasten image>/kanister-tools:8.0.12" \
+KANISTER_IMAGE_PULL_SECRETS="k10-ecr" \
+KANISTER_SECURITY_CONTEXT='{
+  "runAsNonRoot": true,
+  "runAsUser": 1301,
+  "runAsGroup": 1301,
+  "readOnlyRootFilesystem": true,
+  "allowPrivilegeEscalation": false,
+  "seccompProfile": {"type": "RuntimeDefault"},
+  "capabilities": {"drop": ["ALL"]}
+}' \
+./k10genericbackup.sh inject deployment basic-app-deployment -n basic-app
