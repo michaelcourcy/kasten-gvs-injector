@@ -48,7 +48,7 @@ All injection parameters are controlled via environment variables. None are requ
 | `K10_NAMESPACE` | `kasten-io` | Namespace where K10 is deployed |
 | `KANISTER_SIDECAR_IMAGE` | *(read from `k10-config` ConfigMap, key `KanisterToolsImage`)* | Full image reference for the sidecar. Override to pull from a private registry |
 | `KANISTER_IMAGE_PULL_POLICY` | `IfNotPresent` | `imagePullPolicy` for the sidecar |
-| `KANISTER_IMAGE_PULL_SECRETS` | *(none)* | Comma-separated list of `imagePullSecret` names to add to the pod spec |
+| `KANISTER_IMAGE_PULL_SECRETS` | *(none)* | Comma-separated list of `imagePullSecret` names to append to the **pod-level** `imagePullSecrets` (applies to all containers). Only needed when the sidecar image registry requires a secret that is not already present in the existing pod spec |
 | `KANISTER_SECURITY_CONTEXT` | `{}` | JSON `securityContext` object for the sidecar container |
 | `KANISTER_RESOURCES` | `{}` | JSON `resources` block (`requests` / `limits`) for the sidecar |
 | `KANISTER_EXTRA_ENV` | `[]` | JSON array of additional environment variables for the sidecar |
@@ -96,7 +96,17 @@ All inject forms have an uninject counterpart. The script also cleans up the kop
 
 ### Private registry (air-gapped clusters)
 
-When the cluster cannot pull from `gcr.io`, mirror the image to an internal registry and point the script at it:
+When the cluster cannot pull from `gcr.io`, mirror the image to an internal registry and point the script at it.
+
+`imagePullSecrets` is a **pod-level** field in Kubernetes — it applies to every container in the pod, including the injected sidecar. If the target workload already has a pull secret that covers the private registry, you only need to override the image; there is no need to pass `KANISTER_IMAGE_PULL_SECRETS`:
+
+```bash
+# Pod already has a pull secret for the registry — image override is enough
+KANISTER_SIDECAR_IMAGE="registry.internal.example.com/kanister-tools:8.5.4" \
+./k10genericbackup.sh inject deployment my-app-deployment -n my-app
+```
+
+If the sidecar image lives in a registry that has **no pull secret** on the existing pod spec, add one:
 
 ```bash
 KANISTER_SIDECAR_IMAGE="registry.internal.example.com/kanister-tools:8.5.4" \
@@ -104,7 +114,7 @@ KANISTER_IMAGE_PULL_SECRETS="internal-registry-secret" \
 ./k10genericbackup.sh inject deployment my-app-deployment -n my-app
 ```
 
-Multiple pull secrets can be provided as a comma-separated list:
+Multiple secrets can be provided as a comma-separated list — they are appended to any secrets already on the pod:
 
 ```bash
 KANISTER_SIDECAR_IMAGE="registry.internal.example.com/kanister-tools:8.5.4" \
@@ -318,7 +328,7 @@ spec:
           claimName: basic-app-pvc
 EOF
 
-KANISTER_SIDECAR_IMAGE="<nexus resgistry kasten image>/kanister-tools:8.0.12" \
+KANISTER_SIDECAR_IMAGE="<nexus-image-registry>/kasten-images/kanister-tools:8.0.12" \
 KANISTER_IMAGE_PULL_SECRETS="k10-ecr" \
 KANISTER_SECURITY_CONTEXT='{
   "runAsNonRoot": true,
@@ -326,7 +336,11 @@ KANISTER_SECURITY_CONTEXT='{
   "runAsGroup": 1301,
   "readOnlyRootFilesystem": true,
   "allowPrivilegeEscalation": false,
-  "seccompProfile": {"type": "RuntimeDefault"},
-  "capabilities": {"drop": ["ALL"]}
+  "capabilities": {
+    "drop": ["ALL"],
+    "add":  ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+  },
+  "seccompProfile": {"type": "RuntimeDefault"}
 }' \
 ./k10genericbackup.sh inject deployment basic-app-deployment -n basic-app
+
